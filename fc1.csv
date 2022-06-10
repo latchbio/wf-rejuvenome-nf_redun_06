@@ -1,0 +1,3 @@
+sample,fastq1,fastq2
+FC1_L4,/expt_FC1_L4_1.fastq.gz,/expt_FC1_L4_2.fastq.gz
+FC1_L5,/expt_FC1_L5_1.fastq.gz,/expt_FC1_L5_2.fastq.gz
