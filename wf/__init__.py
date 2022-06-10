@@ -1,78 +1,78 @@
-"""
-Assemble and sort some COVID reads...
-"""
+"""nf-redun-06"""
 
 import subprocess
-from pathlib import Path
 
-from latch import small_task, workflow
-from latch.types import LatchFile
-
-
-@small_task
-def assembly_task(read1: LatchFile, read2: LatchFile) -> LatchFile:
-
-    # A reference to our output.
-    sam_file = Path("covid_assembly.sam").resolve()
-
-    _bowtie2_cmd = [
-        "bowtie2/bowtie2",
-        "--local",
-        "-x",
-        "wuhan",
-        "-1",
-        read1.local_path,
-        "-2",
-        read2.local_path,
-        "--very-sensitive-local",
-        "-S",
-        str(sam_file),
-    ]
-
-    subprocess.run(_bowtie2_cmd)
-
-    return LatchFile(str(sam_file), "latch:///covid_assembly.sam")
+from flytekit import task
+from flytekitplugins.pod import Pod
+from kubernetes.client.models import (V1Container, V1PodSpec,
+                                      V1ResourceRequirements, V1Toleration)
+from latch import workflow
+from latch.types import LatchDir, LatchFile
 
 
-@small_task
-def sort_bam_task(sam: LatchFile) -> LatchFile:
+def _get_96_spot_pod() -> Pod:
+    """[ "c6i.24xlarge", "c5.24xlarge", "c5.metal", "c5d.24xlarge", "c5d.metal" ]"""
 
-    bam_file = Path("covid_sorted.bam").resolve()
+    primary_container = V1Container(name="primary")
+    resources = V1ResourceRequirements(
+        requests={"cpu": "90", "memory": "170Gi"},
+        limits={"cpu": "96", "memory": "192Gi"},
+    )
+    primary_container.resources = resources
 
-    _samtools_sort_cmd = [
-        "samtools",
-        "sort",
-        "-o",
-        str(bam_file),
-        "-O",
-        "bam",
-        sam.local_path,
-    ]
+    return Pod(
+        pod_spec=V1PodSpec(
+            containers=[primary_container],
+            tolerations=[
+                V1Toleration(effect="NoSchedule", key="ng", value="cpu-96-spot")
+            ],
+        ),
+        primary_container_name="primary",
+    )
 
-    subprocess.run(_samtools_sort_cmd)
 
-    return LatchFile(str(bam_file), "latch:///covid_sorted.bam")
+large_spot_task = task(task_config=_get_96_spot_pod())
+
+
+@large_spot_task
+def redun_task(
+    fastq1: LatchFile,
+    fastq2: LatchFile,
+    sample: str,
+) -> LatchDir:
+
+    with open("/root/sample.csv", "w") as f:
+        f.write("sample,fastq_1,fastq_2\n")
+        f.write(f"{sample},{fastq1.local_path},{fastq2.local_path}\n")
+
+    subprocess.run(
+        [
+            "nextflow",
+            "run",
+            "nf-redun-06",
+            "-c",
+            "/root/nf-redun-06/conf/test.config",
+            "--input",
+            "/root/sample.csv",
+            "--genome",
+            "GRCh37",
+        ],
+        check=True,
+    )
+    return LatchDir("/root/results", f"latch:///Rejuvenome Redun 06/{sample}/")
 
 
 @workflow
-def assemble_and_sort(read1: LatchFile, read2: LatchFile) -> LatchFile:
-    """Description...
+def redun_workflow(
+    fastq1: LatchFile,
+    fastq2: LatchFile,
+    sample: str,
+) -> LatchDir:
+    """nf-redun-06
 
-    markdown header
-    ----
-
-    Write some documentation about your workflow in
-    markdown here:
-
-    > Regular markdown constructs work as expected.
-
-    # Heading
-
-    * content1
-    * content2
 
     __metadata__:
-        display_name: Assemble and Sort FastQ Files
+        display_name: nf-redun-06
         author:
             name:
             email:
@@ -83,17 +83,26 @@ def assemble_and_sort(read1: LatchFile, read2: LatchFile) -> LatchFile:
 
     Args:
 
-        read1:
-          Paired-end read 1 file to be assembled.
+        fastq1:
+          Paired-end read 1 file to be processed.
 
           __metadata__:
-            display_name: Read1
+            display_name: FastQ Read 1
 
-        read2:
-          Paired-end read 2 file to be assembled.
+        fastq2:
+          Paired-end read 2 file to be processed.
 
           __metadata__:
-            display_name: Read2
+            display_name: FastQ Read 2
+
+        sample:
+          Semantic sample identifier.
+
+          __metadata__:
+            display_name: Sample
     """
-    sam = assembly_task(read1=read1, read2=read2)
-    return sort_bam_task(sam=sam)
+    return redun_task(
+        fastq1=fastq1,
+        fastq2=fastq2,
+        sample=sample,
+    )
